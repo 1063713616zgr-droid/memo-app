@@ -1635,12 +1635,12 @@ const GIST_TOKEN_STORE = 'gist-token';
 // ─── Cloud Sync (Cloudflare Worker) ───────────────────────────────────
 // ─── 云同步：自建服务器 ───────────────────────────────────────────────
 const SERVER_URL = 'http://150.158.16.134:8085';
-const API_KEY_STORE = 'memo-api-key';
+const MEMO_SYNC_KEY_STORE = 'memo-api-key';
 const DEFAULT_API_KEY = 'memo-luna-2026';
 
 function _getApiKey() {
   const input = $('workerPasswordInput')?.value.trim();
-  const stored = localStorage.getItem(API_KEY_STORE) || DEFAULT_API_KEY;
+  const stored = localStorage.getItem(MEMO_SYNC_KEY_STORE) || DEFAULT_API_KEY;
   return (input && input !== '••••••••') ? input : stored;
 }
 
@@ -1653,7 +1653,7 @@ function scheduleAutoSync() {
 
 async function syncUploadWorker(silent = false) {
   const key = _getApiKey();
-  localStorage.setItem(API_KEY_STORE, key);
+  localStorage.setItem(MEMO_SYNC_KEY_STORE, key);
   if (!silent) showToast('正在上传…');
   try {
     const res = await fetch(SERVER_URL + '/api/data', {
@@ -1673,7 +1673,7 @@ async function syncUploadWorker(silent = false) {
 
 async function syncDownloadWorker() {
   const key = _getApiKey();
-  localStorage.setItem(API_KEY_STORE, key);
+  localStorage.setItem(MEMO_SYNC_KEY_STORE, key);
   showToast('正在从服务器拉取…');
   try {
     const res = await fetch(SERVER_URL + '/api/data', {
@@ -1717,7 +1717,7 @@ async function syncDownloadWorker() {
 // 启动时自动从服务器拉取
 async function autoLoadFromServer() {
   try {
-    const key = localStorage.getItem(API_KEY_STORE) || DEFAULT_API_KEY;
+    const key = localStorage.getItem(MEMO_SYNC_KEY_STORE) || DEFAULT_API_KEY;
     const res = await fetch(SERVER_URL + '/api/data', {
       headers: { 'X-Api-Key': key }
     });
