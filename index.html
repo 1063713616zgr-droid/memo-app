@@ -684,11 +684,11 @@ html, body { height: 100%; background: var(--bg); overflow: hidden; }
 
   <!-- Cloud Backup -->
   <div class="settings-section">
-    <div class="settings-section-title">云备份（Cloudflare）</div>
+    <div class="settings-section-title">云同步（自建服务器）</div>
     <div class="settings-block">
       <div class="settings-input-row">
-        <div class="settings-input-label">同步密码</div>
-        <input class="settings-input" id="workerPasswordInput" type="password" placeholder="输入同步密码" autocomplete="off"/>
+        <div class="settings-input-label">API Key</div>
+        <input class="settings-input" id="workerPasswordInput" type="password" placeholder="memo-luna-2026" autocomplete="off"/>
       </div>
       <div class="settings-btn-row">
         <button class="btn btn-ghost" style="flex:1;font-size:13px" onclick="syncUploadWorker()">↑ 上传</button>
@@ -920,7 +920,7 @@ let _undoLastVal = null, _undoActiveId = null;
 function load()         { try { return JSON.parse(localStorage.getItem(DB))        || []; } catch { return []; } }
 function loadTrash()    { try { return JSON.parse(localStorage.getItem(DB_TRASH))  || []; } catch { return []; } }
 function loadGroups()   { try { return JSON.parse(localStorage.getItem(DB_GROUPS)) || []; } catch { return []; } }
-function persist()      { localStorage.setItem(DB,        JSON.stringify(notes));  }
+function persist()      { localStorage.setItem(DB, JSON.stringify(notes)); scheduleAutoSync(); }
 function persistTrash() { localStorage.setItem(DB_TRASH,  JSON.stringify(trash));  }
 function persistGroups(){ localStorage.setItem(DB_GROUPS, JSON.stringify(groups)); }
 
@@ -1633,47 +1633,57 @@ async function callAiTitle(key) {
 const GIST_API = 'https://api.github.com/gists';
 const GIST_TOKEN_STORE = 'gist-token';
 // ─── Cloud Sync (Cloudflare Worker) ───────────────────────────────────
-const WORKER_URL = 'https://memo-sync.1063713616zgr.workers.dev';
-const WORKER_PWD_STORE = 'worker-password';
+// ─── 云同步：自建服务器 ───────────────────────────────────────────────
+const SERVER_URL = 'http://150.158.16.134:8085';
+const API_KEY_STORE = 'memo-api-key';
+const DEFAULT_API_KEY = 'memo-luna-2026';
 
-function _getWorkerPassword() {
+function _getApiKey() {
   const input = $('workerPasswordInput')?.value.trim();
-  const stored = localStorage.getItem(WORKER_PWD_STORE) || '';
+  const stored = localStorage.getItem(API_KEY_STORE) || DEFAULT_API_KEY;
   return (input && input !== '••••••••') ? input : stored;
 }
 
-async function syncUploadWorker() {
-  const pwd = _getWorkerPassword();
-  if (!pwd) { showToast('请先填写同步密码'); return; }
-  localStorage.setItem(WORKER_PWD_STORE, pwd);
-  showToast('正在上传…');
+// 自动同步 debounce
+let _autoSyncTimer = null;
+function scheduleAutoSync() {
+  clearTimeout(_autoSyncTimer);
+  _autoSyncTimer = setTimeout(() => syncUploadWorker(true), 3000);
+}
+
+async function syncUploadWorker(silent = false) {
+  const key = _getApiKey();
+  localStorage.setItem(API_KEY_STORE, key);
+  if (!silent) showToast('正在上传…');
   try {
-    const json = JSON.stringify({ notes, trash, groups });
-    const res = await fetch(WORKER_URL, {
+    const res = await fetch(SERVER_URL + '/api/data', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Password': pwd },
-      body: json
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': key },
+      body: JSON.stringify({ notes, trash, groups })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
-    showToast('✓ 已上传到云端'); markSynced();
-  } catch(e) { showToast('上传失败：' + e.message); }
+    if (!silent) showToast('✓ 已同步到服务器');
+    markSynced();
+  } catch(e) {
+    if (!silent) showToast('上传失败：' + e.message);
+    else console.warn('Auto sync failed:', e.message);
+  }
 }
 
 async function syncDownloadWorker() {
-  const pwd = _getWorkerPassword();
-  if (!pwd) { showToast('请先填写同步密码'); return; }
-  localStorage.setItem(WORKER_PWD_STORE, pwd);
-  showToast('正在下载…');
+  const key = _getApiKey();
+  localStorage.setItem(API_KEY_STORE, key);
+  showToast('正在从服务器拉取…');
   try {
-    const res = await fetch(WORKER_URL, {
-      headers: { 'X-Password': pwd }
+    const res = await fetch(SERVER_URL + '/api/data', {
+      headers: { 'X-Api-Key': key }
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
-    if (!data?.notes) throw new Error('云端暂无数据，请先上传一次');
+    if (!data?.data?.notes) throw new Error('服务器暂无数据，请先上传一次');
 
-    const remote = data;
+    const remote = data.data;
     const remoteTrashIds = new Set((remote.trash||[]).map(n=>n.id));
     const toTrash = notes.filter(n => remoteTrashIds.has(n.id));
     toTrash.forEach(n => {
@@ -1701,7 +1711,36 @@ async function syncDownloadWorker() {
     activeId = notes[0]?.id || null;
     renderList(); renderMain(); renderFilterChips(); updateTrashBadge();
     showToast(`✓ 同步完成，共 ${notes.length} 条备忘`); markSynced();
-  } catch(e) { showToast('下载失败：' + e.message); }
+  } catch(e) { showToast('拉取失败：' + e.message); }
+}
+
+// 启动时自动从服务器拉取
+async function autoLoadFromServer() {
+  try {
+    const key = localStorage.getItem(API_KEY_STORE) || DEFAULT_API_KEY;
+    const res = await fetch(SERVER_URL + '/api/data', {
+      headers: { 'X-Api-Key': key }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data?.data?.notes?.length) return;
+    const remote = data.data;
+
+    const allNotes = [...(remote.notes||[]), ...notes];
+    const merged = {};
+    allNotes.forEach(n => { if (!merged[n.id] || n.updatedAt > merged[n.id].updatedAt) merged[n.id] = n; });
+    notes = Object.values(merged).sort((a,b) => b.updatedAt - a.updatedAt);
+
+    const allGroups = [...(remote.groups||[]), ...groups];
+    const mergedG = {};
+    allGroups.forEach(g => { if (!mergedG[g.id]) mergedG[g.id] = g; });
+    groups = Object.values(mergedG);
+
+    persist(); persistGroups();
+    activeId = notes[0]?.id || null;
+    renderList(); renderMain(); renderFilterChips();
+    markSynced();
+  } catch(e) { /* 静默失败，离线也能正常用 */ }
 }
 
 // ─── Share / Save helper (WebView-safe) ──────────────────────────────
@@ -2417,6 +2456,8 @@ updateSyncStatus();
 initScrollGhost();
 initScrollFab();
 initPWA();
+// 启动时静默从服务器拉取最新数据
+autoLoadFromServer();
 </script>
 </body>
 </html>
